@@ -444,10 +444,10 @@ index 0abab30..7c3357b 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..be582b9
+index 0000000..af22e83
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,145 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -565,7 +565,17 @@ index 0000000..be582b9
 +    /* Console defaults, as on the Switch: the boot movie is skipped, single
 +     * player is preselected, cutscenes skip on a press. */
 +    setenv("CLX_SKIP_INTRO", "1", 0);
++    /* The guest lock by guest priority, as the Switch's clx_env.txt has it: the
++     * game's time-critical sound mixer takes it from the main thread at once.
++     * FIFO (the default) kept the mixer waiting behind the main thread, worse
++     * at 60 fps: crackles and stutter (v00.04). RECOMP_GIL_EAGER=0 for FIFO. */
++    setenv("RECOMP_GIL_EAGER", "1", 0);
 +    load_env();
++    /* With the [audio] line (RECOMP_AUDIO_LOG): the voice processor's clicks
++     * every 10 s too -- stale ring samples, starved streams, frame-boundary
++     * jumps per voice. */
++    if (!(getenv("RECOMP_AUDIO_LOG") && getenv("RECOMP_AUDIO_LOG")[0] == '0'))
++        setenv("RECOMP_APU_RING_STATS", "1", 0);
 +}
 +
 +void ps4_error_dialog(const char *msg)
