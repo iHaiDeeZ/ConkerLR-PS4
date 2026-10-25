@@ -599,6 +599,26 @@ index b1b7d7a..612bcaa 100644
      }
  
      if (fd < 0 && fd != XBOX_DIR_FD) {
+diff --git a/xboxrecomp/src/kernel/kernel_path.c b/xboxrecomp/src/kernel/kernel_path.c
+index 7058ad4..ba1485d 100644
+--- a/xboxrecomp/src/kernel/kernel_path.c
++++ b/xboxrecomp/src/kernel/kernel_path.c
+@@ -43,7 +43,15 @@ typedef struct {
+ 
+ static const path_rule s_rules[] = {
+     { "\\Device\\CdRom0\\",                   0, NULL,         NULL          },
++#if defined(__PS4__)
++    /* E:, the title's own partition (TDATA, UDATA, CACHE), beside the disc on
++     * other hosts. The PS4's disc folder is the read-only package: XAPI could
++     * not create TDATA there and sent the title back to the dashboard with
++     * XLD_ERROR_INVALID_HARD_DISK (v00.01). It goes with the saves instead. */
++    { "\\Device\\Harddisk0\\Partition1\\",    1, "\\Partition1", "/Partition1" },
++#else
+     { "\\Device\\Harddisk0\\Partition1\\",    0, NULL,         NULL          },
++#endif
+     /* The rest of the disk. Partition 0 is the whole raw device, 2 holds
+      * system data, and 3-5 are the per-title caches behind X:, Y: and Z:.
+      * Without these the path layer reported "Unrecognized Xbox path" and
 diff --git a/xboxrecomp/src/nv2a_vk/CMakeLists.txt b/xboxrecomp/src/nv2a_vk/CMakeLists.txt
 index 2fa3cc9..c66403a 100644
 --- a/xboxrecomp/src/nv2a_vk/CMakeLists.txt
@@ -7059,7 +7079,7 @@ index 0000000..b7515e1
 +*/
 +/* clang-format on */
 diff --git a/xboxrecomp/src/platform/win32_compat.c b/xboxrecomp/src/platform/win32_compat.c
-index 5211bd1..557841a 100644
+index 5211bd1..fc7cfed 100644
 --- a/xboxrecomp/src/platform/win32_compat.c
 +++ b/xboxrecomp/src/platform/win32_compat.c
 @@ -46,7 +46,7 @@
@@ -7338,7 +7358,7 @@ index 5211bd1..557841a 100644
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
      (void)address; (void)size; (void)newProtect;
-@@ -2491,6 +2744,105 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
+@@ -2491,6 +2744,145 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
      return (LPVOID)at;
  }
  
@@ -7347,18 +7367,49 @@ index 5211bd1..557841a 100644
 +    return VirtualFree((LPVOID)baseAddr, 0, MEM_RELEASE);
 +}
 +#elif defined(__PS4__)
-+/* File mappings on the PS4: a block of direct memory per mapping (its physical
-+ * offset in o->fd's place, o->ps4_phys), mapped again for every view -- see
-+ * "Virtual memory on the PS4" above. Zeroed through its first view. */
++/* File mappings on the PS4: a POSIX shared-memory object per mapping, mapped
++ * again for every view -- see "Virtual memory on the PS4" above. Direct memory
++ * cannot alias (a second sceKernelMapDirectMemory of the same pages fails with
++ * 0x80020010, v00.01 on the console), so it is only the fallback when there is
++ * no shared memory, and then a mapping has one view. */
++static int ps4_shm(size_t size)
++{
++    static volatile LONG seq;
++    char name[32];
++    int fd;
++
++    snprintf(name, sizeof name, "/clx_map_%ld", (long)InterlockedIncrement(&seq));
++    fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
++    if (fd < 0)
++        return -1;
++    shm_unlink(name);
++    if (ftruncate(fd, (off_t)size) != 0) {
++        close(fd);
++        return -1;
++    }
++    return fd;
++}
++
 +HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
 +                          DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
 +{
 +    SIZE_T size = ((SIZE_T)maxSizeHigh << 32) | maxSizeLow;
 +    off_t phys;
 +    w32_object *o;
++    int fd;
 +
 +    (void)file; (void)sa; (void)protect; (void)name;
 +    if (!size) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
++    fd = ps4_shm(ps4_page(size));
++    fprintf(stderr, "  [PS4] file mapping of %zu KB: %s\n", (size_t)size / 1024,
++            fd >= 0 ? "shared memory (views alias)" : "direct memory (one view)");
++    if (fd >= 0) {                          /* zero-filled by the kernel */
++        o = obj_alloc(K_FILEMAP);
++        o->fd       = fd;
++        o->ps4_phys = -1;
++        o->map_size = size;
++        return (HANDLE)o;
++    }
 +    phys = ps4_alloc_direct(ps4_page(size));
 +    if (phys < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
 +    {                                       /* direct memory comes back as it was left */
@@ -7423,14 +7474,23 @@ index 5211bd1..557841a 100644
 +        }
 +        at = (uintptr_t)a;
 +    }
-+    if (!ps4_map_phys(at, len, o->ps4_phys + (off_t)off)) {
++    if (o->fd >= 0) {
++        void *v = mmap((void *)at, len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, o->fd, (off_t)off);
++        if (v != (void *)at) {
++            pthread_mutex_unlock(&s_ps4_lock);
++            fprintf(stderr, "  [PS4] shared-memory view at %p (+%zu KB) failed (errno %d)\n",
++                    (void *)at, len / 1024, errno);
++            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
++            return NULL;
++        }
++    } else if (!ps4_map_phys(at, len, o->ps4_phys + (off_t)off)) {
 +        pthread_mutex_unlock(&s_ps4_lock);
 +        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
 +        return NULL;
 +    }
 +    if (ps4_in_win(at, len))
 +        ps4_mark(at, len, 1);
-+    ps4_add(at, len, o->ps4_phys + (off_t)off, 0, 0);
++    ps4_add(at, len, o->fd >= 0 ? -1 : o->ps4_phys + (off_t)off, 0, 0);
 +    view_register((void *)at, len);
 +    pthread_mutex_unlock(&s_ps4_lock);
 +    return (LPVOID)at;
@@ -7444,7 +7504,7 @@ index 5211bd1..557841a 100644
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
      return VirtualFree((LPVOID)baseAddr, 0, MEM_RELEASE);
-@@ -2670,6 +3022,18 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+@@ -2670,6 +3062,18 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
          b->ullTotalPageFile = b->ullTotalPhys;
          b->ullAvailPageFile = b->ullAvailPhys;
      }
