@@ -615,6 +615,41 @@ index d4015e2..21625a1 100644
              on = 1;
  #else
              on = 0;
+diff --git a/xboxrecomp/src/apu/apu_vp.c b/xboxrecomp/src/apu/apu_vp.c
+index 5a11bd7..506525c 100644
+--- a/xboxrecomp/src/apu/apu_vp.c
++++ b/xboxrecomp/src/apu/apu_vp.c
+@@ -589,6 +589,30 @@ void mcpx_apu_vp_write(void *opaque, hwaddr addr, uint64_t val,
+         traced++;
+         fprintf(stderr, "[APU-FE] %04X %08X\n", (unsigned)addr, (unsigned)val);
+     }
++#if defined(__PS4__)
++    /* PS4: methods under d->lock, which the frame thread holds while it
++     * processes voices. Without it a VOICE_OFF from the guest raced the frame
++     * thread's read-modify-write of the same voice's PAR_STATE (its envelope
++     * step): the frame thread wrote back the ACTIVE bit it had read a moment
++     * before, and the voice never stopped -- the title screen's looping rain
++     * went on through the whole game (v00.05). The lock was left out for
++     * Horizon's 10 ms time slices; the PS4's frame thread runs above the
++     * guest's (priority 400), so a method waits at most one short frame.
++     * RECOMP_APU_FE_LOCK=0 goes back to no lock. */
++    {
++        static int fe_lock = -1;
++        if (fe_lock < 0) {
++            const char *e = getenv("RECOMP_APU_FE_LOCK");
++            fe_lock = !(e && *e == '0');
++        }
++        if (fe_lock) {
++            qemu_mutex_lock(&d->lock);
++            fe_method(d, (uint32_t)addr, (uint32_t)val);
++            qemu_mutex_unlock(&d->lock);
++            return;
++        }
++    }
++#endif
+     /* Dispatch known methods through fe_method */
+     fe_method(d, (uint32_t)addr, (uint32_t)val);
+ }
 diff --git a/xboxrecomp/src/apu/apu_xaudio2.c b/xboxrecomp/src/apu/apu_xaudio2.c
 index 62dc206..daeb825 100644
 --- a/xboxrecomp/src/apu/apu_xaudio2.c
