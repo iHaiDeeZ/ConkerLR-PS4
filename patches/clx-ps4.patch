@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 37cbe88..ea570c7 100644
+index 37cbe88..90a3659 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -9,6 +9,17 @@ cmake_minimum_required(VERSION 3.20)
@@ -39,7 +39,7 @@ index 37cbe88..ea570c7 100644
          set(NFSU2_GEN_OPT "-O2" CACHE STRING "Optimisation for the lifted code")
      else()
          set(NFSU2_GEN_OPT "-O1" CACHE STRING "Optimisation for the lifted code")
-@@ -137,6 +151,20 @@ if(NOT MSVC)
+@@ -137,6 +151,23 @@ if(NOT MSVC)
      target_link_libraries(${PROJECT_NAME} PRIVATE m)
  endif()
  
@@ -53,6 +53,9 @@ index 37cbe88..ea570c7 100644
 +        COMPILE_DEFINITIONS "CLX_VERSION=\"${CLX_PS4_VERSION}\"")
 +    target_link_libraries(${PROJECT_NAME} PRIVATE -lScePad -lSceUserService -lSceAudioOut
 +        -lSceSystemService -lSceVideoOut)
++    # ps4-kit's DNS wrap calls __real_getaddrinfo, and a __real_ reference never pulls the C
++    # library's member in (kit apps with the /net shares get it through libsmb2): ask for it.
++    target_link_options(${PROJECT_NAME} PRIVATE --undefined=getaddrinfo)
 +    ps4_kit_link_mesa(${PROJECT_NAME})
 +    ps4_kit_app(${PROJECT_NAME})
 +endif()
@@ -190,10 +193,10 @@ index 0abab30..3ce0e9e 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..bd949a2
+index 0000000..bf58c28
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,120 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -235,6 +238,15 @@ index 0000000..bd949a2
 +{
 +    fprintf(stderr, "[CRASH] guest state:\n");
 +    print_guest_state();
++}
++
++/* The renderers' weak per-present hook (the Switch's SaltyNX frame counter).
++ * create-fself refuses an eboot whose weak symbol nothing defines, so the PS4
++ * defines it, doing nothing. */
++void nv2a_host_frame_presented(unsigned int width, unsigned int height)
++{
++    (void)width;
++    (void)height;
 +}
 +
 +static void log_open(void)

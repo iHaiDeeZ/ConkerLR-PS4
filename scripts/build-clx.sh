@@ -30,7 +30,10 @@ if [ "${1:-}" = libs ]; then
 else
     [ -f "$DISC/default.xbe" ] || { echo "no $DISC/default.xbe (unpack your disc there)" >&2; exit 1; }
     sum=$(sha1sum "$DISC/default.xbe" | cut -d' ' -f1)
-    [ "$sum" = "$XBE_SHA1" ] || { echo "default.xbe has SHA-1 $sum, needs the retail NTSC one ($XBE_SHA1)" >&2; exit 1; }
+    # Also accepted: the same retail NTSC code with a region-free certificate (region flags 7, media
+    # flags 0x400001FF): every seed, override and data pointer of the recomp checked identical.
+    [ "$sum" = "$XBE_SHA1" ] || [ "$sum" = bef166b2d2f72fef6bc051fd7bc36caadada0b54 ] \
+        || { echo "default.xbe has SHA-1 $sum, needs the retail NTSC one ($XBE_SHA1)" >&2; exit 1; }
     stamp=$(cd "$SRC" && { sha1sum < "$DISC/default.xbe"; find xboxrecomp/tools config tools src/recomp_manual.c \
             -type f ! -path '*/output/*' ! -name '*.pyc' | LC_ALL=C sort | xargs sha1sum; } | sha1sum | cut -d' ' -f1)
     if [ "$(cat "$GEN/.stamp" 2>/dev/null)" != "$stamp" ]; then
@@ -53,7 +56,7 @@ if [ "${1:-}" = libs ]; then
     echo "== runtime libraries"
     ninja -C "$B" -k 0 platform xbox_kernel xbox_devbus xbox_d3d8 xbox_dsound xbox_apu xbox_nv2a \
         xbox_usb xbox_input xbox_video xbox_nv2a_vk > "$CLX/logs/build-libs.log" 2>&1 \
-        || { grep -E "error|undefined" "$CLX/logs/build-libs.log" | head -60; exit 1; }
+        || { grep -E "error:|FAILED|undefined symbol" "$CLX/logs/build-libs.log" | head -60; exit 1; }
     echo "runtime libraries built"
     exit 0
 fi
@@ -63,7 +66,7 @@ echo "== build (the lifted code takes a while the first time)"
 mem_mb=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) / 1024 ))
 JOBS=$(( mem_mb / 1500 )); [ "$JOBS" -lt 1 ] && JOBS=1; [ "$JOBS" -gt "$(nproc)" ] && JOBS=$(nproc)
 ninja -C "$B" -j"$JOBS" > "$CLX/logs/build.log" 2>&1 \
-    || { grep -E "error|undefined" "$CLX/logs/build.log" | head -60; exit 1; }
+    || { grep -E "error:|FAILED|undefined symbol|missing module" "$CLX/logs/build.log" | head -60; exit 1; }
 
 echo "== package"
 STAGE="$B/stage"
