@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 37cbe88..90a3659 100644
+index 37cbe88..04ea9a3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -9,6 +9,17 @@ cmake_minimum_required(VERSION 3.20)
@@ -39,7 +39,7 @@ index 37cbe88..90a3659 100644
          set(NFSU2_GEN_OPT "-O2" CACHE STRING "Optimisation for the lifted code")
      else()
          set(NFSU2_GEN_OPT "-O1" CACHE STRING "Optimisation for the lifted code")
-@@ -137,6 +151,23 @@ if(NOT MSVC)
+@@ -137,6 +151,25 @@ if(NOT MSVC)
      target_link_libraries(${PROJECT_NAME} PRIVATE m)
  endif()
  
@@ -56,6 +56,8 @@ index 37cbe88..90a3659 100644
 +    # ps4-kit's DNS wrap calls __real_getaddrinfo, and a __real_ reference never pulls the C
 +    # library's member in (kit apps with the /net shares get it through libsmb2): ask for it.
 +    target_link_options(${PROJECT_NAME} PRIVATE --undefined=getaddrinfo)
++    # SDL's audio thread priority (src/ps4_clx.c)
++    target_link_options(${PROJECT_NAME} PRIVATE --wrap=SDL_SYS_SetThreadPriority)
 +    ps4_kit_link_mesa(${PROJECT_NAME})
 +    ps4_kit_app(${PROJECT_NAME})
 +endif()
@@ -64,10 +66,10 @@ index 37cbe88..90a3659 100644
  #
  # Build with switch/build.sh. The NRO reads the extracted disc from
 diff --git a/src/clx_menu.c b/src/clx_menu.c
-index 6c096d5..88d6255 100644
+index 6c096d5..3ed960a 100644
 --- a/src/clx_menu.c
 +++ b/src/clx_menu.c
-@@ -39,6 +39,26 @@ typedef struct {
+@@ -39,6 +39,28 @@ typedef struct {
      int kind;
  } Item;
  
@@ -77,9 +79,11 @@ index 6c096d5..88d6255 100644
 +static const Item k_items[] = {
 +    { "DISPLAY", &g_clx.display, 3, { 0, 1, 2 }, { "FIT 4:3", "STRETCH 16:9", "WIDE 16:9" }, 0 },
 +    { "UPSCALING FILTER", &g_clx.upscale, 2, { 0, 1 }, { "BILINEAR", "FSR 1" }, 0 },
-+    { "FRAME GENERATION", &g_clx.framegen, 2, { 0, 1 }, { "OFF", "ON (30 TO 60)" }, 0 },
++    /* (frame generation is still in the renderer, ps4_post.h, but out of the
++     * menu: the game's own 60 fps looks far better) */
 +    { "FRAME RATE", &g_clx.fps60, 2, { 0, 1 }, { "30", "60" }, RESTART },
-+    { "RENDER SCALE", &g_clx.scale_handheld, 6, { 100, 150, 200, 250, 300, 400 }, { 0 }, 0 },
++    { "RENDER SCALE", &g_clx.scale_handheld, 6, { 100, 150, 200, 225, 300, 400 },
++      { "100% (480P)", "150% (720P)", "200% (960P)", "225% (1080P)", "300%", "400%" }, 0 },
 +    { "ANTI-ALIASING (FXAA)", &g_clx.fxaa, 2, { 0, 1 }, { "OFF", "ON" }, 0 },
 +    { "ANISOTROPIC FILTER", &g_clx.aniso, 5, { 1, 2, 4, 8, 16 }, { 0 }, 0 },
 +    { "FPS COUNTER", &g_clx.fps_osd, 2, { 0, 1 }, { "OFF", "ON" }, 0 },
@@ -94,7 +98,7 @@ index 6c096d5..88d6255 100644
  static const Item k_items[] = {
  #if CLX_PC_INPUT
      { "CONTROLLER", NULL, 0, { 0 }, { 0 }, 0, PAD },
-@@ -68,6 +88,18 @@ static const Item k_items[] = {
+@@ -68,6 +90,18 @@ static const Item k_items[] = {
  #endif
      { "EXIT GAME", NULL, 0, { 0 }, { 0 }, 0, EXIT },
  };
@@ -113,7 +117,7 @@ index 6c096d5..88d6255 100644
  #define NITEMS ((int)(sizeof k_items / sizeof k_items[0]))
  #define VIS 11                   /* lines shown at once; the list scrolls */
  
-@@ -127,6 +159,14 @@ static void apply(const Item *it)
+@@ -127,6 +161,14 @@ static void apply(const Item *it)
  {
      if (it->val == &g_clx.aspect169)
          xbox_widescreen = g_clx.aspect169;
@@ -128,7 +132,7 @@ index 6c096d5..88d6255 100644
      else if (it->val == &g_clx.fps_osd)
          ovl_fps_osd = g_clx.fps_osd;
      else if (it->val == &g_clx.volume)
-@@ -245,7 +285,7 @@ static void paint(void)
+@@ -245,7 +287,7 @@ static void paint(void)
          s_top = s_sel;
      if (s_sel >= s_top + rows)
          s_top = s_sel - rows + 1;
@@ -137,7 +141,7 @@ index 6c096d5..88d6255 100644
      if (s_top > 0)
          ovl_text(x0 + w - 28, y0 + 22, 2, grey, "^");
      if (s_top + rows < NITEMS)
-@@ -262,7 +302,7 @@ static void paint(void)
+@@ -262,7 +304,7 @@ static void paint(void)
                   ? "< %s%s >" : "%s%s", val, it->kind == VALUE && restart_needed(it) ? "*" : "");
          ovl_text(x0 + w - 40 - ovl_text_width(sc, shown), y, sc, c, shown);
      }
@@ -146,7 +150,7 @@ index 6c096d5..88d6255 100644
      if ((k_items[s_sel].kind == PAD || k_items[s_sel].kind == REMAP_PAD) && !pad_name())
          ovl_text(x0 + 16, y0 + h - 20, 1, gold, "PLUG IN OR PAIR A PAD");
      else
-@@ -328,6 +368,7 @@ void clx_menu_hook(unsigned char *r, unsigned host)
+@@ -328,6 +370,7 @@ void clx_menu_hook(unsigned char *r, unsigned host)
      if (lx > 16000 || rx > 16000) b |= 0x08;
      if (r[4] > 0x80) b |= 0x10000;
      if (r[5] > 0x80) b |= 0x20000;
@@ -154,7 +158,7 @@ index 6c096d5..88d6255 100644
      edge = b & ~prev;
      prev = b;
      r[2] &= (unsigned char)~0x20;           /* BACK belongs to the menu */
-@@ -353,7 +394,7 @@ void clx_menu_hook(unsigned char *r, unsigned host)
+@@ -353,7 +396,7 @@ void clx_menu_hook(unsigned char *r, unsigned host)
          return;
      }
  #endif
@@ -164,7 +168,7 @@ index 6c096d5..88d6255 100644
          if (s_open) {
              s_restart_note = s_armed = s_done = 0;
 diff --git a/src/clx_options.c b/src/clx_options.c
-index 27f4534..066d02f 100644
+index 27f4534..69b3e78 100644
 --- a/src/clx_options.c
 +++ b/src/clx_options.c
 @@ -68,6 +68,8 @@ void clx_bind_reset(void)
@@ -172,7 +176,7 @@ index 27f4534..066d02f 100644
  #if defined(__SWITCH__)
      0, 0, 0, 0, 1, 0, 100, 150, 225, 16, 1, 1    /* Switch button icons */
 +#elif defined(__PS4__)
-+    0, 0, 0, 0, 1, 0, 100, 200, 225, 16, 1, 2    /* PS4: render scale 200%, PlayStation icons */
++    0, 1, 0, 0, 1, 0, 100, 225, 225, 16, 1, 2    /* PS4: 60 fps, 1080p (225%), PlayStation icons */
  #else
      0, 0, 0, 0, 1, 0, 100, 100, 225, 16, 1, 0    /* PC: render scale 100%, Xbox icons */
  #endif
@@ -186,17 +190,27 @@ index 27f4534..066d02f 100644
  #else
      const char *e = getenv("CLX_OPTIONS");
      return e && *e ? e : "clx_options.txt";
-@@ -93,6 +98,9 @@ void clx_options_load(void)
+@@ -88,11 +93,19 @@ static int on(const char *v)
+     return v && (*v == '1' || !strncmp(v, "on", 2));
+ }
+ 
++#if defined(__PS4__)
++#define CLX_PS4_DEFAULTS 2          /* ps4_defaults= in clx_options.txt */
++static int s_defaults_changed;
++#endif
++
+ void clx_options_load(void)
+ {
      FILE *f = fopen(clx_options_path(), "r");
      char line[128];
      const char *e;
 +#if defined(__PS4__)
-+    int have_display = 0;
++    int have_display = 0, defaults = 0;
 +#endif
  
      if (f) {
          while (fgets(line, sizeof line, f)) {
-@@ -117,6 +125,14 @@ void clx_options_load(void)
+@@ -117,6 +130,15 @@ void clx_options_load(void)
              else if (!strcmp(line, "scale_docked")) g_clx.scale_docked = atoi(v);
              else if (!strcmp(line, "aniso")) g_clx.aniso = atoi(v);
              else if (!strcmp(line, "fxaa")) g_clx.fxaa = atoi(v) != 0;
@@ -207,15 +221,25 @@ index 27f4534..066d02f 100644
 +            }
 +            else if (!strcmp(line, "upscale")) g_clx.upscale = !strcmp(v, "fsr");
 +            else if (!strcmp(line, "frame_generation")) g_clx.framegen = on(v);
++            else if (!strcmp(line, "ps4_defaults")) defaults = atoi(v);
 +#endif
              else if (!strcmp(line, "button_glyphs"))
                  g_clx.glyphs = !strcmp(v, "xbox") ? 0 : !strcmp(v, "ps") ? 2 : 1;
  #if CLX_PC_INPUT
-@@ -139,6 +155,13 @@ void clx_options_load(void)
+@@ -139,6 +161,22 @@ void clx_options_load(void)
      if (g_clx.scale_handheld < 50 || g_clx.scale_handheld > 400) g_clx.scale_handheld = 150;
      if (g_clx.aniso < 1) g_clx.aniso = 1;
      if (g_clx.aniso > 16) g_clx.aniso = 16;
 +#if defined(__PS4__)
++    /* New PS4 defaults, once over a file saved before them (ps4_defaults=2,
++     * v00.04): the game at 60 fps, rendered at 1080p (225%), no frame
++     * generation (the user found it looked bad). */
++    if (f && defaults < CLX_PS4_DEFAULTS) {
++        g_clx.fps60 = 1;
++        g_clx.scale_handheld = 225;
++        g_clx.framegen = 0;
++        s_defaults_changed = 1;
++    }
 +    /* display= decides the aspect (wide is the Hor+ 16:9); an older file's
 +     * aspect=16:9 alone is wide */
 +    if (!have_display && g_clx.aspect169)
@@ -225,8 +249,17 @@ index 27f4534..066d02f 100644
      /* What the boot code reads (main.c, the renderers). */
      setenv("CLX_ASPECT", g_clx.aspect169 ? "16:9" : "4:3", 0);
      printf("[options] %s: aspect %s, fps %d, camera %s%s, subtitles %s, FPS counter %s, volume %d,"
-@@ -149,10 +172,34 @@ void clx_options_load(void)
+@@ -147,12 +185,43 @@ void clx_options_load(void)
+            g_clx.cam_free ? "free" : "classic", g_clx.cam_invert ? " (inverted)" : "",
+            g_clx.bubble_wide ? "wide" : "classic", g_clx.fps_osd ? "on" : "off", g_clx.volume,
             g_clx.scale_handheld, g_clx.scale_docked, g_clx.aniso, g_clx.fxaa ? "on" : "off");
++#if defined(__PS4__)
++    if (s_defaults_changed) {
++        printf("[options] new PS4 defaults (%d): 60 fps, render scale 1080p, no frame generation\n",
++               CLX_PS4_DEFAULTS);
++        clx_options_save();
++    }
++#endif
  }
  
 +#if defined(__PS4__)
@@ -255,19 +288,19 @@ index 27f4534..066d02f 100644
      "aspect", "fps", "camera", "camera_invert_y", "camera_invert", "bubble", "fps_counter",
      "volume", "scale_handheld", "scale_docked", "aniso", "fxaa", "button_glyphs",
 +#if defined(__PS4__)
-+    "display", "upscale", "frame_generation",
++    "display", "upscale", "frame_generation", "ps4_defaults",
 +#endif
  };
  
  static int owned(const char *line)
-@@ -195,6 +242,11 @@ int clx_options_save(void)
+@@ -195,6 +264,11 @@ int clx_options_save(void)
              g_clx.bubble_wide ? "wide" : "classic", g_clx.fps_osd ? 1 : 0, g_clx.volume,
              g_clx.scale_handheld, g_clx.scale_docked, g_clx.aniso, g_clx.fxaa ? 1 : 0,
              g_clx.glyphs == 0 ? "xbox" : g_clx.glyphs == 2 ? "ps" : "switch");
 +#if defined(__PS4__)
-+    fprintf(out, "display=%s\nupscale=%s\nframe_generation=%d\n",
++    fprintf(out, "display=%s\nupscale=%s\nframe_generation=%d\nps4_defaults=%d\n",
 +            g_clx.display == 1 ? "stretch" : g_clx.display == 2 ? "wide" : "fit",
-+            g_clx.upscale ? "fsr" : "bilinear", g_clx.framegen ? 1 : 0);
++            g_clx.upscale ? "fsr" : "bilinear", g_clx.framegen ? 1 : 0, CLX_PS4_DEFAULTS);
 +#endif
  #if CLX_PC_INPUT
      {
@@ -311,7 +344,7 @@ index 5aed2ba..f37c141 100644
  void clx_menu_hook(unsigned char *report, unsigned host_buttons);
  
 diff --git a/src/main.c b/src/main.c
-index 0abab30..370db67 100644
+index 0abab30..7c3357b 100644
 --- a/src/main.c
 +++ b/src/main.c
 @@ -32,6 +32,13 @@
@@ -375,7 +408,7 @@ index 0abab30..370db67 100644
  void xbox_nx_spread_thread(void);   /* win32_compat.c: off core 0, all cores allowed */
  void xbox_nx_track_thread(void *entry);   /* win32_compat.c: Switch [perf] report */
  
-@@ -358,6 +373,20 @@ static int game_main(void)
+@@ -358,6 +373,24 @@ static int game_main(void)
          setenv("RECOMP_GL_SCALE", k, 0);
      }
  #endif
@@ -388,6 +421,10 @@ index 0abab30..370db67 100644
 +        clx_display_apply();        /* the quick menu's settings (L3 + R3) */
 +        clx_framegen_apply();
 +    }
++    /* 60 fps: the D3D presentation interval (fps=60, recomp_manual.c) and the
++     * interval every flip carries in the pushbuffer (CLX_FPS_CAP), both 2 -> 1 */
++    if (g_clx.fps60)
++        setenv("CLX_FPS_CAP", "60", 0);
 +    /* The log is a file on the console's drive: what matters, as on the Switch.
 +     * RECOMP_QUIET=0 in clx_env.txt brings the rest back. */
 +    setenv("RECOMP_QUIET", "1", 0);
@@ -396,7 +433,7 @@ index 0abab30..370db67 100644
  #if !defined(_WIN32) || defined(CLX_PC_GL)
      /* BACK (XINPUT 0x20) opened the Xbox Live sign-up, which cannot work
       * here. The title's menus use B for cancel (UI word 0x00776238 bit 0x20
-@@ -393,7 +422,7 @@ static int game_main(void)
+@@ -393,7 +426,7 @@ static int game_main(void)
       * boot on the title's fatal screen. CLX_SKIP_INTRO=0 plays it. */
      {
          const char *skip = getenv("CLX_SKIP_INTRO");
@@ -407,10 +444,10 @@ index 0abab30..370db67 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..bf58c28
+index 0000000..be582b9
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,135 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -461,6 +498,21 @@ index 0000000..bf58c28
 +{
 +    (void)width;
 +    (void)height;
++}
++
++/* SDL's audio thread asks for a high priority, which SDL's pthread back end
++ * cannot give on the PS4: the sound output's thread then waited behind the
++ * game's and the renderer's (crackles). HIGH and TIME_CRITICAL get 400, the
++ * priority ps4-kit keeps audio at (the game's threads run at 700). */
++int scePthreadSetprio(void *thread, int prio);
++void *scePthreadSelf(void);
++int __real_SDL_SYS_SetThreadPriority(int priority);
++
++int __wrap_SDL_SYS_SetThreadPriority(int priority)
++{
++    if (priority >= 2)                      /* SDL_THREAD_PRIORITY_HIGH */
++        return scePthreadSetprio(scePthreadSelf(), 400) == 0 ? 0 : -1;
++    return __real_SDL_SYS_SetThreadPriority(priority);
 +}
 +
 +static void log_open(void)
@@ -553,6 +605,55 @@ index d4015e2..21625a1 100644
              on = 1;
  #else
              on = 0;
+diff --git a/xboxrecomp/src/apu/apu_xaudio2.c b/xboxrecomp/src/apu/apu_xaudio2.c
+index 62dc206..daeb825 100644
+--- a/xboxrecomp/src/apu/apu_xaudio2.c
++++ b/xboxrecomp/src/apu/apu_xaudio2.c
+@@ -340,7 +340,7 @@ void xa2_get_stats(Xa2Stats *out)
+ #define SDLA_BLOCK_SAMPLES 256
+ #define SDLA_BLOCK_BYTES   (SDLA_BLOCK_SAMPLES * SDLA_CHANNELS * (int)sizeof(int16_t))
+ #define SDLA_MAX_SAMPLES   1024
+-#ifdef __SWITCH__
++#if defined(__SWITCH__) || defined(__PS4__)
+ #define SDLA_DEFAULT_BLOCKS 12
+ #else
+ #define SDLA_DEFAULT_BLOCKS 8
+@@ -524,6 +524,35 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+         return 0;
+     g_sdla_frames_written++;
+     g_sdla_stats.submitted++;
++    {
++        /* RECOMP_AUDIO_LOG=1 (default on the PS4; 0 turns it off): every 10 s
++         * of sound, "[audio]" with what went wrong in it -- underruns (the
++         * queue ran dry: a gap), dropped blocks (it was full: a jump), samples
++         * at full scale -- and how much was queued. */
++        static int on = -1;
++        static uint64_t next, last_under, last_drop, last_clip;
++        if (on < 0) {
++            const char *e = getenv("RECOMP_AUDIO_LOG");
++#if defined(__PS4__)
++            on = !(e && *e == '0');
++#else
++            on = e && *e == '1';
++#endif
++            next = 10ull * SDLA_SAMPLE_RATE;
++        }
++        if (on && g_sdla_stats.samples >= next) {
++            next += 10ull * SDLA_SAMPLE_RATE;
++            fprintf(stderr, "[audio] 10 s: %llu underruns, %llu dropped, %llu clipped, peak %d, queued %d of %d blocks\n",
++                    (unsigned long long)(g_sdla_stats.underruns - last_under),
++                    (unsigned long long)(g_sdla_stats.dropped - last_drop),
++                    (unsigned long long)(g_sdla_stats.clipped - last_clip),
++                    g_sdla_stats.peak, queued, g_sdla_target);
++            last_under = g_sdla_stats.underruns;
++            last_drop = g_sdla_stats.dropped;
++            last_clip = g_sdla_stats.clipped;
++            g_sdla_stats.peak = 0;
++        }
++    }
+     return 1;
+ }
+ 
 diff --git a/xboxrecomp/src/d3d/CMakeLists.txt b/xboxrecomp/src/d3d/CMakeLists.txt
 index 43e0138..3955705 100644
 --- a/xboxrecomp/src/d3d/CMakeLists.txt
@@ -12348,7 +12449,7 @@ index 0000000..b7515e1
 +*/
 +/* clang-format on */
 diff --git a/xboxrecomp/src/platform/win32_compat.c b/xboxrecomp/src/platform/win32_compat.c
-index 5211bd1..fc7cfed 100644
+index 5211bd1..5fcdddc 100644
 --- a/xboxrecomp/src/platform/win32_compat.c
 +++ b/xboxrecomp/src/platform/win32_compat.c
 @@ -46,7 +46,7 @@
@@ -12370,7 +12471,23 @@ index 5211bd1..fc7cfed 100644
      WAITORTIMERCALLBACK timer_cb;
      PVOID           timer_param;
  
-@@ -1831,6 +1834,256 @@ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
+@@ -930,6 +933,15 @@ void xbox_nx_raise_host_thread(void)
+     if (e && *e == '0')
+         return;
+     svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);
++#elif defined(__PS4__)
++    /* PS4: above the game's threads (700), as ps4-kit keeps audio (400; 256
++     * is the highest). RECOMP_NX_AUDIO_PRIO=0 leaves it as it is. */
++    extern int scePthreadSetprio(void *thread, int prio);
++    extern void *scePthreadSelf(void);
++    const char *e = getenv("RECOMP_NX_AUDIO_PRIO");
++    if (e && *e == '0')
++        return;
++    scePthreadSetprio(scePthreadSelf(), 400);
+ #endif
+ }
+ 
+@@ -1831,6 +1843,256 @@ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
      return TRUE;
  }
  
@@ -12627,7 +12744,7 @@ index 5211bd1..fc7cfed 100644
  BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
  {
      (void)address; (void)size; (void)newProtect;
-@@ -2491,6 +2744,145 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
+@@ -2491,6 +2753,145 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
      return (LPVOID)at;
  }
  
@@ -12773,7 +12890,7 @@ index 5211bd1..fc7cfed 100644
  BOOL UnmapViewOfFile(LPCVOID baseAddr)
  {
      return VirtualFree((LPVOID)baseAddr, 0, MEM_RELEASE);
-@@ -2670,6 +3062,18 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+@@ -2670,6 +3071,18 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
          b->ullTotalPageFile = b->ullTotalPhys;
          b->ullAvailPageFile = b->ullAvailPhys;
      }
