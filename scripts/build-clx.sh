@@ -3,6 +3,8 @@
 # Run in WSL:
 #   CLX_VERSION=00.01 scripts/build-clx.sh            lift (once), build, package
 #   CLX_VERSION=00.01 scripts/build-clx.sh libs       only the runtime libraries (no XBE needed)
+#   CLX_RELEASE=1 CLX_VERSION=01.00 scripts/build-clx.sh   release package: diagnostics off
+#                                                       (CLX_DIAG=1 in clx_env.txt brings them back)
 #
 #   ~/clx-build/src/conker-lr-recomp   upstream checkout, branch ps4 (patches/clx-ps4.patch)
 #   ~/clx-build/disc                   your unpacked disc (default.xbe, retail NTSC)
@@ -48,7 +50,7 @@ fi
 
 echo "== configure"
 ps4_cmake -S "$SRC" -B "$B" -G Ninja -DCLX_PS4=ON -DNFSU2_GEN_DIR="$GEN" \
-    -DCLX_PS4_VERSION="$VERSION" \
+    -DCLX_PS4_VERSION="$VERSION" -DCLX_PS4_RELEASE=$([ "${CLX_RELEASE:-0}" = 1 ] && echo ON || echo OFF) \
     -DSDL2_DIR="$CLX/sysroot/lib/cmake/SDL2" -Dglslang_DIR="$PS4_SYSROOT/lib/cmake/glslang" \
     > "$CLX/logs/configure.log" 2>&1 || { tail -40 "$CLX/logs/configure.log"; exit 1; }
 

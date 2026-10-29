@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 37cbe88..04ea9a3 100644
+index 37cbe88..379567e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -9,6 +9,17 @@ cmake_minimum_required(VERSION 3.20)
@@ -39,7 +39,7 @@ index 37cbe88..04ea9a3 100644
          set(NFSU2_GEN_OPT "-O2" CACHE STRING "Optimisation for the lifted code")
      else()
          set(NFSU2_GEN_OPT "-O1" CACHE STRING "Optimisation for the lifted code")
-@@ -137,6 +151,25 @@ if(NOT MSVC)
+@@ -137,6 +151,30 @@ if(NOT MSVC)
      target_link_libraries(${PROJECT_NAME} PRIVATE m)
  endif()
  
@@ -51,6 +51,11 @@ index 37cbe88..04ea9a3 100644
 +    set(CLX_PS4_VERSION "00.00" CACHE STRING "Version written to the log")
 +    set_property(SOURCE src/ps4_clx.c APPEND PROPERTY
 +        COMPILE_DEFINITIONS "CLX_VERSION=\"${CLX_PS4_VERSION}\"")
++    # The release package: every diagnostic off unless clx_env.txt has CLX_DIAG=1.
++    option(CLX_PS4_RELEASE "PS4 release build (diagnostics off by default)" OFF)
++    if(CLX_PS4_RELEASE)
++        set_property(SOURCE src/ps4_clx.c APPEND PROPERTY COMPILE_DEFINITIONS CLX_RELEASE=1)
++    endif()
 +    target_link_libraries(${PROJECT_NAME} PRIVATE -lScePad -lSceUserService -lSceAudioOut
 +        -lSceSystemService -lSceVideoOut)
 +    # ps4-kit's DNS wrap calls __real_getaddrinfo, and a __real_ reference never pulls the C
@@ -444,10 +449,10 @@ index 0abab30..7c3357b 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..60f4789
+index 0000000..00e0b00
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,191 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -532,34 +537,76 @@ index 0000000..60f4789
 +    close(fd);
 +}
 +
-+static void load_env(void)
++/* clx_env.txt into the environment, before the log is open (CLX_DIAG decides
++ * whether there is one); the lines go to `seen` for the log. 0 = no file. */
++static int load_env(char *seen, size_t cap)
 +{
 +    FILE *f = fopen(CLX_DATA_DIR "/clx_env.txt", "r");
 +    char line[1024];
++    size_t used = 0;
 +
-+    if (!f) {
-+        printf("[ps4] no " CLX_DATA_DIR "/clx_env.txt: default settings\n");
-+        return;
-+    }
++    seen[0] = 0;
++    if (!f)
++        return 0;
 +    while (fgets(line, sizeof line, f)) {
 +        char *eq, *end = line + strlen(line);
++        int n;
 +        while (end > line && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '))
 +            *--end = 0;
 +        if (!line[0] || line[0] == '#' || !(eq = strchr(line, '=')) || eq == line)
 +            continue;
 +        *eq = 0;
 +        setenv(line, eq + 1, 1);
-+        printf("[ps4] env %s=%s\n", line, eq + 1);
++        n = snprintf(seen + used, cap - used, "[ps4] env %s=%s\n", line, eq + 1);
++        if (n > 0 && used + (size_t)n < cap)
++            used += (size_t)n;
 +    }
 +    fclose(f);
++    return 1;
 +}
++
++/* The release package (CLX_RELEASE) starts with every diagnostic off; a
++ * development build with all of them on. CLX_DIAG=0/1 in clx_env.txt wins. */
++#ifdef CLX_RELEASE
++#define CLX_DIAG_DEFAULT 0
++#else
++#define CLX_DIAG_DEFAULT 1
++#endif
 +
 +void ps4_boot(void)
 +{
++    static char seen[4096];
++    int have_env, diag;
++    const char *e;
++
 +    mkdir(CLX_DATA_DIR, 0777);
 +    mkdir(CLX_DATA_DIR "/save", 0777);
-+    log_open();
-+    printf("[ps4] Conker: Live & Reloaded for PS4 v" CLX_VERSION ", built " __DATE__ " " __TIME__ "\n");
++    have_env = load_env(seen, sizeof seen);
++    e = getenv("CLX_DIAG");
++    diag = e && *e ? *e == '1' : CLX_DIAG_DEFAULT;
++    if (diag) {
++        log_open();
++    } else {
++        /* No log, no audio report, no boot trace, open-file tracking, thread
++         * dumps or crash log (ps4-kit's, each with its own switch). */
++        int fd = open("/dev/null", O_WRONLY);
++        if (fd >= 0) {
++            dup2(fd, 1);
++            dup2(fd, 2);
++            close(fd);
++        }
++        ps4_diag_set_boot_trace(0);
++        ps4_diag_set_open_tracking(0);
++        ps4_diag_set_thread_dumps(0);
++        ps4_diag_set_crash_log(0);
++        setenv("RECOMP_AUDIO_LOG", "0", 0);
++    }
++    printf("[ps4] Conker: Live & Reloaded for PS4 v" CLX_VERSION ", built " __DATE__ " " __TIME__
++           ", diagnostics %s\n", diag ? "on" : "off");
++    if (have_env)
++        fputs(seen, stdout);
++    else
++        printf("[ps4] no " CLX_DATA_DIR "/clx_env.txt: default settings\n");
 +    ps4_boot_trace("clx: boot v" CLX_VERSION);
 +    setenv("CLX_OPTIONS", CLX_DATA_DIR "/clx_options.txt", 0);
 +    /* Console defaults, as on the Switch: the boot movie is skipped, single
@@ -570,7 +617,6 @@ index 0000000..60f4789
 +     * FIFO (the default) kept the mixer waiting behind the main thread, worse
 +     * at 60 fps: crackles and stutter (v00.04). RECOMP_GIL_EAGER=0 for FIFO. */
 +    setenv("RECOMP_GIL_EAGER", "1", 0);
-+    load_env();
 +    /* With the [audio] line (RECOMP_AUDIO_LOG): the voice processor's clicks
 +     * every 10 s too -- stale ring samples, starved streams, frame-boundary
 +     * jumps per voice. */
