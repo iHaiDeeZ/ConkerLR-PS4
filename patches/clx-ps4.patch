@@ -444,10 +444,10 @@ index 0abab30..7c3357b 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..af22e83
+index 0000000..a9d04e3
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,149 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -574,8 +574,12 @@ index 0000000..af22e83
 +    /* With the [audio] line (RECOMP_AUDIO_LOG): the voice processor's clicks
 +     * every 10 s too -- stale ring samples, starved streams, frame-boundary
 +     * jumps per voice. */
-+    if (!(getenv("RECOMP_AUDIO_LOG") && getenv("RECOMP_AUDIO_LOG")[0] == '0'))
++    if (!(getenv("RECOMP_AUDIO_LOG") && getenv("RECOMP_AUDIO_LOG")[0] == '0')) {
 +        setenv("RECOMP_APU_RING_STATS", "1", 0);
++        /* every voice heard in each 5 s, with the guest's on/release/off/pause
++         * methods for it: the title screen's rain went on into the game (v00.06) */
++        setenv("RECOMP_APU_VOICES", "1", 0);
++    }
 +}
 +
 +void ps4_error_dialog(const char *msg)
@@ -616,10 +620,56 @@ index d4015e2..21625a1 100644
  #else
              on = 0;
 diff --git a/xboxrecomp/src/apu/apu_vp.c b/xboxrecomp/src/apu/apu_vp.c
-index 5a11bd7..506525c 100644
+index 5a11bd7..9c03379 100644
 --- a/xboxrecomp/src/apu/apu_vp.c
 +++ b/xboxrecomp/src/apu/apu_vp.c
-@@ -589,6 +589,30 @@ void mcpx_apu_vp_write(void *opaque, hwaddr addr, uint64_t val,
+@@ -194,6 +194,16 @@ static void set_hrir_coeff_tar(MCPXAPUState *d, int channel, int coeff_idx,
+  * Front-End method dispatch
+  * ============================================================ */
+ 
++/* RECOMP_APU_VOICES: per voice, the guest's VOICE_ON, VOICE_RELEASE,
++ * VOICE_OFF and VOICE_PAUSE methods since the last 5 s list ([APU-V]) -- does
++ * a sound that plays on get told to stop? */
++static uint32_t g_fe_cnt[MCPX_HW_MAX_VOICES][4];
++static void fe_count(uint32_t handle, int k)
++{
++    if (handle < MCPX_HW_MAX_VOICES)
++        g_fe_cnt[handle][k]++;
++}
++
+ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+ {
+     unsigned int slot;
+@@ -213,6 +223,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+ 
+     case NV1BA0_PIO_VOICE_ON: {
+         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
++        fe_count(selected_handle, 0);
+ 
+         bool locked = is_voice_locked(d, (uint16_t)selected_handle);
+         if (!locked) voice_lock(d, (uint16_t)selected_handle, true);
+@@ -298,6 +309,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+ 
+     case NV1BA0_PIO_VOICE_RELEASE: {
+         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
++        fe_count(selected_handle, 1);
+ 
+         bool locked = is_voice_locked(d, (uint16_t)selected_handle);
+         if (!locked) voice_lock(d, (uint16_t)selected_handle, true);
+@@ -324,10 +336,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+     }
+ 
+     case NV1BA0_PIO_VOICE_OFF:
++        fe_count(argument & NV1BA0_PIO_VOICE_OFF_HANDLE, 2);
+         voice_off(d, (uint16_t)(argument & NV1BA0_PIO_VOICE_OFF_HANDLE));
+         break;
+ 
+     case NV1BA0_PIO_VOICE_PAUSE:
++        fe_count(argument & NV1BA0_PIO_VOICE_PAUSE_HANDLE, 3);
+         voice_set_mask(d, (uint16_t)(argument & NV1BA0_PIO_VOICE_PAUSE_HANDLE),
+                        NV_PAVS_VOICE_PAR_STATE, NV_PAVS_VOICE_PAR_STATE_PAUSED,
+                        (argument & NV1BA0_PIO_VOICE_PAUSE_ACTION) != 0);
+@@ -589,6 +603,30 @@ void mcpx_apu_vp_write(void *opaque, hwaddr addr, uint64_t val,
          traced++;
          fprintf(stderr, "[APU-FE] %04X %08X\n", (unsigned)addr, (unsigned)val);
      }
@@ -649,6 +699,41 @@ index 5a11bd7..506525c 100644
 +#endif
      /* Dispatch known methods through fe_method */
      fe_method(d, (uint32_t)addr, (uint32_t)val);
+ }
+@@ -1459,7 +1497,7 @@ static int   g_tr_on = -1, g_tr_unpaused, g_tr_sounding;
+ static char  g_tr_quiet[200], g_tr_loud[200];
+ /* RECOMP_APU_VOICES=1: also every voice seen in the last 5 s, loudest peak
+  * (without RECOMP_APU_TRACE's register-write logging). */
+-static struct { float peak; uint32_t fmt, vbin, frames, ba, ebo, cbo, lbo, pa; } g_tr_v[MCPX_HW_MAX_VOICES];
++static struct { float peak; uint32_t fmt, vbin, frames, ba, ebo, cbo, lbo, pa, state; } g_tr_v[MCPX_HW_MAX_VOICES];
+ 
+ static int apu_trace_level(void)
+ {
+@@ -1484,6 +1522,7 @@ void apu_vp_trace_voice(MCPXAPUState *d, uint16_t v, float peak, float ea)
+         g_tr_v[v].lbo = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSH_SAMPLE, NV_PAVS_VOICE_CUR_PSH_SAMPLE_LBO);
+         g_tr_v[v].pa = (uint32_t)get_data_ptr(d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
+                                               g_tr_v[v].ba & NV_PAVS_VOICE_CUR_PSL_START_BA);
++        g_tr_v[v].state = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE, 0xFFFFFFFF);
+     }
+     g_tr_unpaused++;
+     if (peak > 0.0f) g_tr_sounding++;
+@@ -1516,12 +1555,15 @@ static void apu_vp_trace_second(void)
+         if (++tick % 5 == 0) {
+             int v;
+             for (v = 0; v < MCPX_HW_MAX_VOICES; v++)
+-                if (g_tr_v[v].frames)
+-                    fprintf(stderr, "[APU-V] v%03X frames %u peak %.3f fmt %08X vbin %08X ba %08X pa %08X lbo %X ebo %X cbo %X%s\n",
++                if (g_tr_v[v].frames || g_fe_cnt[v][0] || g_fe_cnt[v][1] || g_fe_cnt[v][2] || g_fe_cnt[v][3])
++                    fprintf(stderr, "[APU-V] v%03X frames %u peak %.3f fmt %08X vbin %08X ba %08X pa %08X lbo %X ebo %X cbo %X"
++                            " state %08X | on %u rel %u off %u pause %u%s\n",
+                             v, g_tr_v[v].frames, g_tr_v[v].peak, g_tr_v[v].fmt, g_tr_v[v].vbin,
+                             g_tr_v[v].ba, g_tr_v[v].pa, g_tr_v[v].lbo, g_tr_v[v].ebo, g_tr_v[v].cbo,
++                            g_tr_v[v].state, g_fe_cnt[v][0], g_fe_cnt[v][1], g_fe_cnt[v][2], g_fe_cnt[v][3],
+                             (g_tr_v[v].fmt & NV_PAVS_VOICE_CFG_FMT_MULTIPASS) ? " MP" : "");
+             memset(g_tr_v, 0, sizeof g_tr_v);
++            memset(g_fe_cnt, 0, sizeof g_fe_cnt);
+         }
+     }
  }
 diff --git a/xboxrecomp/src/apu/apu_xaudio2.c b/xboxrecomp/src/apu/apu_xaudio2.c
 index 62dc206..daeb825 100644
@@ -979,6 +1064,33 @@ index 7058ad4..ba1485d 100644
      /* The rest of the disk. Partition 0 is the whole raw device, 2 holds
       * system data, and 3-5 are the per-title caches behind X:, Y: and Z:.
       * Without these the path layer reported "Unrecognized Xbox path" and
+diff --git a/xboxrecomp/src/kernel/xbox_memory_layout.c b/xboxrecomp/src/kernel/xbox_memory_layout.c
+index f3ce030..1b79a93 100644
+--- a/xboxrecomp/src/kernel/xbox_memory_layout.c
++++ b/xboxrecomp/src/kernel/xbox_memory_layout.c
+@@ -3088,7 +3088,21 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+         /* RECOMP_NO_MIRRORS=1: map none, as on a host that cannot alias
+          * memory (Horizon) -- for reproducing its behaviour on a desktop. */
+         int no_mirrors = getenv("RECOMP_NO_MIRRORS") && *getenv("RECOMP_NO_MIRRORS") == '1';
+-        for (int m = 0; m < (no_mirrors ? 0 : XBOX_NUM_MIRRORS); m++) {
++        int n_mirrors = XBOX_NUM_MIRRORS;
++#if defined(__PS4__)
++        /* PS4: every view of a shared-memory object is charged to the app's
++         * flexible memory, though all show the same pages: after five 64 MB
++         * views the sixth fails (ENOMEM, v00.06), which left 25 mirrors and
++         * the tiled aperture unmapped. One mirror (RECOMP_MIRRORS=N for more),
++         * so the tiled view below fits and flexible memory is left over. */
++        {
++            const char *e = getenv("RECOMP_MIRRORS");
++            n_mirrors = e && *e ? atoi(e) : 1;
++            if (n_mirrors < 0) n_mirrors = 0;
++            if (n_mirrors > XBOX_NUM_MIRRORS) n_mirrors = XBOX_NUM_MIRRORS;
++        }
++#endif
++        for (int m = 0; m < (no_mirrors ? 0 : n_mirrors); m++) {
+             uintptr_t mirror_base = (uintptr_t)g_memory_base +
+                                     (uintptr_t)(m + 1) * g_memory_size;
+             uint64_t guest_lo = (uint64_t)(m + 1) * g_memory_size;
 diff --git a/xboxrecomp/src/nv2a_vk/CMakeLists.txt b/xboxrecomp/src/nv2a_vk/CMakeLists.txt
 index 2fa3cc9..042e8f4 100644
 --- a/xboxrecomp/src/nv2a_vk/CMakeLists.txt
