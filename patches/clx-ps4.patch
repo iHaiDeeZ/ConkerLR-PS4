@@ -444,10 +444,10 @@ index 0abab30..7c3357b 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..57bcf82
+index 0000000..60f4789
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,150 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -576,11 +576,10 @@ index 0000000..57bcf82
 +     * jumps per voice. */
 +    if (!(getenv("RECOMP_AUDIO_LOG") && getenv("RECOMP_AUDIO_LOG")[0] == '0')) {
 +        setenv("RECOMP_APU_RING_STATS", "1", 0);
-+        /* every voice heard in each 5 s, with the guest's on/release/off/pause
-+         * methods for it: the title screen's rain went on into the game (v00.06) */
-+        setenv("RECOMP_APU_VOICES", "1", 0);
-+        /* stream packets played vs. bank reads, by checksum (the rain) */
-+        setenv("RECOMP_APU_SEGLOG", "1", 0);
++        /* (RECOMP_APU_VOICES=1: every voice heard in each 5 s with the guest's
++         * on/release/off/pause methods; RECOMP_APU_SEGLOG=1: stream packets
++         * played vs. bank reads by checksum -- how the rain was found, v00.08.
++         * Both in clx_env.txt when needed.) */
 +    }
 +}
 +
@@ -1129,7 +1128,7 @@ index 7058ad4..ba1485d 100644
       * system data, and 3-5 are the per-title caches behind X:, Y: and Z:.
       * Without these the path layer reported "Unrecognized Xbox path" and
 diff --git a/xboxrecomp/src/kernel/xbox_memory_layout.c b/xboxrecomp/src/kernel/xbox_memory_layout.c
-index f3ce030..1b79a93 100644
+index f3ce030..75d9d3c 100644
 --- a/xboxrecomp/src/kernel/xbox_memory_layout.c
 +++ b/xboxrecomp/src/kernel/xbox_memory_layout.c
 @@ -3088,7 +3088,21 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
@@ -1155,6 +1154,24 @@ index f3ce030..1b79a93 100644
              uintptr_t mirror_base = (uintptr_t)g_memory_base +
                                      (uintptr_t)(m + 1) * g_memory_size;
              uint64_t guest_lo = (uint64_t)(m + 1) * g_memory_size;
+@@ -3163,8 +3177,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+          * third).
+          * ponytail: off on Horizon; commit it in large chunks if a title
+          * ever needs this memory. */
+-#ifdef __SWITCH__
+-        fprintf(stderr, "  Extended VMA: not reserved on Horizon (a title's commit up"
++#if defined(__SWITCH__) || defined(__PS4__)
++        /* PS4: not reserved either. Reserved (v00.01-v00.08), Conker put its
++         * stream packets and their file reads at 0x74000000+, and the APU
++         * cannot reach them: a bus address up there has bit 26 set, which
++         * apu_phys takes for the low-RAM tag, so it played RAM at the same
++         * low bits -- unchanging memory that went on as a hiss under the whole
++         * game (heard as the title screen's rain). Refused, the title falls
++         * back to RAM, the tested path. */
++        fprintf(stderr, "  Extended VMA: not reserved on this host (a title's commit up"
+                         " here is refused, as on Linux)\n");
+ #else
+         if (VirtualAlloc(extvma_base, (SIZE_T)extvma_size, MEM_RESERVE, PAGE_NOACCESS)) {
 diff --git a/xboxrecomp/src/nv2a_vk/CMakeLists.txt b/xboxrecomp/src/nv2a_vk/CMakeLists.txt
 index 2fa3cc9..042e8f4 100644
 --- a/xboxrecomp/src/nv2a_vk/CMakeLists.txt
