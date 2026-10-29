@@ -444,10 +444,10 @@ index 0abab30..7c3357b 100644
          if (skip && *skip == '1')
 diff --git a/src/ps4_clx.c b/src/ps4_clx.c
 new file mode 100644
-index 0000000..a9d04e3
+index 0000000..57bcf82
 --- /dev/null
 +++ b/src/ps4_clx.c
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,151 @@
 +/*
 + * ps4_clx.c -- PS4 boot glue for the Conker recompilation (ps4-kit).
 + *
@@ -579,6 +579,8 @@ index 0000000..a9d04e3
 +        /* every voice heard in each 5 s, with the guest's on/release/off/pause
 +         * methods for it: the title screen's rain went on into the game (v00.06) */
 +        setenv("RECOMP_APU_VOICES", "1", 0);
++        /* stream packets played vs. bank reads, by checksum (the rain) */
++        setenv("RECOMP_APU_SEGLOG", "1", 0);
 +    }
 +}
 +
@@ -620,7 +622,7 @@ index d4015e2..21625a1 100644
  #else
              on = 0;
 diff --git a/xboxrecomp/src/apu/apu_vp.c b/xboxrecomp/src/apu/apu_vp.c
-index 5a11bd7..9c03379 100644
+index 5a11bd7..1e3b223 100644
 --- a/xboxrecomp/src/apu/apu_vp.c
 +++ b/xboxrecomp/src/apu/apu_vp.c
 @@ -194,6 +194,16 @@ static void set_hrir_coeff_tar(MCPXAPUState *d, int channel, int coeff_idx,
@@ -700,7 +702,35 @@ index 5a11bd7..9c03379 100644
      /* Dispatch known methods through fe_method */
      fe_method(d, (uint32_t)addr, (uint32_t)val);
  }
-@@ -1459,7 +1497,7 @@ static int   g_tr_on = -1, g_tr_unpaused, g_tr_sounding;
+@@ -887,6 +925,27 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+         hwaddr addr = d->regs[NV_PAPU_VPSSLADDR] + page * 8;
+         segment_offset = ldl_le_phys(address_space_memory, addr);
+         segment_length = ldl_le_phys(address_space_memory, addr + 4);
++        {   /* RECOMP_APU_SEGLOG=1: each stream packet a voice moves to, with a
++             * sum of its first 64 bytes, to match against the file reads
++             * ([SREAD], kernel_file.c): which file a stream really plays. */
++            static int seglog = -1;
++            static unsigned lines;
++            static uint32_t last_off[MCPX_HW_MAX_VOICES];
++            if (seglog < 0) {
++                const char *e = getenv("RECOMP_APU_SEGLOG");
++                seglog = e && *e == '1';
++            }
++            if (seglog && v < MCPX_HW_MAX_VOICES && last_off[v] != segment_offset && lines < 6000) {
++                const uint32_t *w = (const uint32_t *)apu_phys(segment_offset);
++                uint32_t sum = 0;
++                for (int k = 0; k < 16; k++)
++                    sum = sum * 31u + w[k];
++                last_off[v] = segment_offset;
++                lines++;
++                fprintf(stderr, "[APU-SEG] v%03X pa %08X len %u sum %08X\n", v,
++                        (unsigned)segment_offset, (unsigned)(segment_length & 0xffff), sum);
++            }
++        }
+         assert(segment_offset != 0);
+         assert(segment_length != 0);
+         seg_len = (segment_length >> 0) & 0xffff;
+@@ -1459,7 +1518,7 @@ static int   g_tr_on = -1, g_tr_unpaused, g_tr_sounding;
  static char  g_tr_quiet[200], g_tr_loud[200];
  /* RECOMP_APU_VOICES=1: also every voice seen in the last 5 s, loudest peak
   * (without RECOMP_APU_TRACE's register-write logging). */
@@ -709,7 +739,7 @@ index 5a11bd7..9c03379 100644
  
  static int apu_trace_level(void)
  {
-@@ -1484,6 +1522,7 @@ void apu_vp_trace_voice(MCPXAPUState *d, uint16_t v, float peak, float ea)
+@@ -1484,6 +1543,7 @@ void apu_vp_trace_voice(MCPXAPUState *d, uint16_t v, float peak, float ea)
          g_tr_v[v].lbo = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSH_SAMPLE, NV_PAVS_VOICE_CUR_PSH_SAMPLE_LBO);
          g_tr_v[v].pa = (uint32_t)get_data_ptr(d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
                                                g_tr_v[v].ba & NV_PAVS_VOICE_CUR_PSL_START_BA);
@@ -717,7 +747,7 @@ index 5a11bd7..9c03379 100644
      }
      g_tr_unpaused++;
      if (peak > 0.0f) g_tr_sounding++;
-@@ -1516,12 +1555,15 @@ static void apu_vp_trace_second(void)
+@@ -1516,12 +1576,15 @@ static void apu_vp_trace_second(void)
          if (++tick % 5 == 0) {
              int v;
              for (v = 0; v < MCPX_HW_MAX_VOICES; v++)
@@ -1018,7 +1048,7 @@ index 0000000..98a3b7f
 +}
 +#endif
 diff --git a/xboxrecomp/src/kernel/kernel_file.c b/xboxrecomp/src/kernel/kernel_file.c
-index b1b7d7a..612bcaa 100644
+index b1b7d7a..3c5b7a2 100644
 --- a/xboxrecomp/src/kernel/kernel_file.c
 +++ b/xboxrecomp/src/kernel/kernel_file.c
 @@ -949,7 +949,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
@@ -1044,6 +1074,40 @@ index b1b7d7a..612bcaa 100644
      }
  
      if (fd < 0 && fd != XBOX_DIR_FD) {
+@@ -1025,6 +1032,33 @@ NTSTATUS __stdcall xbox_NtReadFile(
+     }
+ 
+     IoStatusBlock->Information = (ULONG_PTR)n;
++    {   /* RECOMP_APU_SEGLOG=1: reads of the music and ambience banks (audio/m_*,
++         * audio/am_*), with a sum of their first 64 bytes, to match against the
++         * stream packets the APU plays ([APU-SEG], apu_vp.c). */
++        extern char *getenv(const char *);
++        extern ptrdiff_t xbox_GetMemoryOffset(void);
++        static int seglog = -1;
++        static unsigned lines;
++        if (seglog < 0) {
++            const char *e = getenv("RECOMP_APU_SEGLOG");
++            seglog = e && *e == '1';
++        }
++        if (seglog && n >= 64 && lines < 6000) {
++            const char *p = w32_handle_path(FileHandle);
++            const char *b = p ? strrchr(p, '/') : NULL;
++            if (b && (strncmp(b, "/am_", 4) == 0 || strncmp(b, "/m_", 3) == 0)) {
++                const uint32_t *w = (const uint32_t *)Buffer;
++                uint32_t sum = 0;
++                int k;
++                for (k = 0; k < 16; k++)
++                    sum = sum * 31u + w[k];
++                lines++;
++                fprintf(stderr, "[SREAD] %s off %lld len %u got %ld at va %08X sum %08X\n", b + 1,
++                        (long long)(ByteOffset ? ByteOffset->QuadPart : -1), (unsigned)Length, (long)n,
++                        (unsigned)((uintptr_t)Buffer - (uintptr_t)xbox_GetMemoryOffset()), sum);
++            }
++        }
++    }
+     if (n == 0 && Length > 0) {
+         IoStatusBlock->Status = STATUS_END_OF_FILE;
+         return STATUS_END_OF_FILE;
 diff --git a/xboxrecomp/src/kernel/kernel_path.c b/xboxrecomp/src/kernel/kernel_path.c
 index 7058ad4..ba1485d 100644
 --- a/xboxrecomp/src/kernel/kernel_path.c
